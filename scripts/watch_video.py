@@ -42,6 +42,7 @@ from _common import (  # noqa: E402
     ExitCode, atomic_path, die, emit, finalize, require_executable,
     parse_time_spec, window_duration,
 )
+from _bootstrap import ensure_environment  # noqa: E402
 from _cache import (  # noqa: E402
     dir_fingerprint, file_fingerprint, get_cache, invalidate_downstream,
     is_cached, record_step, step_fingerprint,
@@ -271,7 +272,8 @@ def _soft_step(name: str, fn: Any, *args: Any,
 
 def fetch(kind: str, value: str, workdir: Path,
           attachment_id: str | None, credentials: str | None,
-          since_seconds: int) -> dict:
+          since_seconds: int, cookies_from_browser: str | None = None,
+          cookies_file: str | None = None) -> dict:
     if _STEP_LOGS_DIR is not None:
         import fetch as fetch_mod
         return fetch_mod.run_inproc(
@@ -283,6 +285,8 @@ def fetch(kind: str, value: str, workdir: Path,
             attachment_id=attachment_id,
             since_seconds=since_seconds,
             credentials=credentials,
+            cookies_from_browser=cookies_from_browser,
+            cookies_file=cookies_file,
         )
     cmd = [sys.executable, str(SCRIPTS_DIR / "fetch.py"), str(workdir)]
     if kind == "jira":
@@ -293,6 +297,10 @@ def fetch(kind: str, value: str, workdir: Path,
             cmd += ["--credentials", credentials]
     elif kind == "url":
         cmd += ["--url", value]
+        if cookies_from_browser:
+            cmd += ["--cookies-from-browser", cookies_from_browser]
+        if cookies_file:
+            cmd += ["--cookies", cookies_file]
     elif kind == "path":
         cmd += ["--path", value]
     else:  # auto
@@ -567,6 +575,15 @@ def main() -> int:
     ap.add_argument("--credentials", help="(Jira mode) path to credentials JSON")
     ap.add_argument("--since-seconds", type=int, default=300,
                     help="(auto mode) max age of Downloads file")
+    ap.add_argument("--cookies-from-browser", metavar="BROWSER[:PROFILE]",
+                    help="(URL mode) when the site requires a login (Instagram, "
+                         "X, age-gated YouTube), retry with this browser's "
+                         "cookies: chrome, firefox, safari, edge, brave, ... "
+                         "Default: $WATCH_VIDEO_COOKIES_FROM_BROWSER or "
+                         "~/.watch-video/config.json")
+    ap.add_argument("--cookies", metavar="FILE",
+                    help="(URL mode) Netscape cookies.txt to use when the site "
+                         "requires a login")
     # Frame options
     ap.add_argument("--frames", type=int, default=0)
     ap.add_argument("--resolution", type=int, default=960)
@@ -705,6 +722,8 @@ def main() -> int:
                          "highlights.py if neither --highlights-api-key nor env "
                          "ANTHROPIC_API_KEY is set.")
     args = ap.parse_args()
+    # After parsing, so --help works without setting anything up.
+    ensure_environment()
 
     global _PARTIAL_META_PATH
     _PARTIAL_META_PATH = None
@@ -782,7 +801,8 @@ def main() -> int:
     else:
         invalidate_downstream(meta, "fetch")
         fetch_info = fetch(kind, value, workdir,
-                           args.attachment_id, args.credentials, args.since_seconds)
+                           args.attachment_id, args.credentials, args.since_seconds,
+                           args.cookies_from_browser, args.cookies)
         meta["video"] = fetch_info
         video = Path(fetch_info["path"])
         record_step(meta, "fetch", fetch_fp, [video])

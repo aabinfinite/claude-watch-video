@@ -71,6 +71,10 @@ Install ffmpeg per platform:
 
 Commands below use `python3`. On Windows use `py` (or `python` if it is a real interpreter, not the Microsoft Store alias).
 
+The Python packages for URL mode, local transcription, dedup and reports install themselves: on first run the script builds a private environment at `~/.watch-video/venv` (with `uv` fetching a compatible Python when yours is too new or too old) and re-runs inside it. Set `WATCH_VIDEO_NO_BOOTSTRAP=1` to manage them yourself with the table below. Details: [references/setup.md](references/setup.md).
+
+Sites that only serve video to logged-in users (Instagram, X, age-gated YouTube) need `--cookies-from-browser chrome` (or another browser), or a default in `~/.watch-video/config.json`. Cookies are only used after an anonymous attempt is refused. See [references/setup.md](references/setup.md#sites-that-need-a-login).
+
 Optional (unlock features as you need them):
 
 | Adds | Install |

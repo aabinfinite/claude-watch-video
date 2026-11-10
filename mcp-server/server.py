@@ -428,6 +428,7 @@ def _build_pipeline_args(
     no_audio: bool = False,
     contact_sheet: bool = False,
     highlights_prompt: str | None = None,
+    cookies_from_browser: str | None = None,
 ) -> list[str]:
     """Build watch_video.py's argv tail. Shared by watch_video and
     watch_video_start so the two tools can't drift on flag handling."""
@@ -462,6 +463,8 @@ def _build_pipeline_args(
         args += ["--resolution", str(resolution)]
     if highlights_prompt:
         args += ["--highlights-prompt", highlights_prompt]
+    if cookies_from_browser:
+        args += ["--cookies-from-browser", cookies_from_browser]
     return args
 
 
@@ -712,6 +715,7 @@ async def watch_video(
     no_audio: bool = False,
     contact_sheet: bool = False,
     highlights_prompt: str | None = None,
+    cookies_from_browser: str | None = None,
     ctx: Context | None = None,
 ) -> str:
     """Run the watch-video pipeline on an input and block until it finishes.
@@ -766,6 +770,12 @@ async def watch_video(
             more tokens to read.
         no_audio: Skip audio and transcription entirely (frames only).
         contact_sheet: Write a tiled image of all kept frames to sheet.jpg.
+        cookies_from_browser: URL mode. When the site only serves the video
+            to a logged-in session (Instagram, X, age-gated YouTube), retry
+            with this browser's cookies, e.g. 'chrome', 'firefox', 'safari'.
+            Only pass it when the user agreed to it; without it such a run
+            fails with exit code 4 and login_required in the error. A default
+            in ~/.watch-video/config.json applies either way.
         highlights_prompt: Headless runs only: ask the highlights step
             (paid Anthropic API, needs a key) to pick moments for this
             prompt. Inside a Claude session, pick the moments yourself from
@@ -801,7 +811,8 @@ async def watch_video(
             start, end, no_html, no_docx, lang=lang, model=model,
             resolution=resolution, no_audio=no_audio,
             contact_sheet=contact_sheet,
-            highlights_prompt=highlights_prompt)
+            highlights_prompt=highlights_prompt,
+            cookies_from_browser=cookies_from_browser)
         _prepare_run_logs(job_id)
         _write_status(job_id, {
             "state": "running",
@@ -846,6 +857,7 @@ async def watch_video_start(
     no_audio: bool = False,
     contact_sheet: bool = False,
     highlights_prompt: str | None = None,
+    cookies_from_browser: str | None = None,
 ) -> str:
     """Start the watch-video pipeline as a background job. Returns immediately
     with a job_id; poll watch_video_status to track completion.
@@ -873,7 +885,8 @@ async def watch_video_start(
             (id, filename, size, created, author): ask which one, then start
             again passing its id. Ids also come from getJiraIssue.
         frames, dedup, ocr, whisper, start, end, no_html, no_docx, lang,
-            model, resolution, no_audio, contact_sheet, highlights_prompt: same as
+            model, resolution, no_audio, contact_sheet, highlights_prompt,
+            cookies_from_browser: same as
             watch_video (dedup is off unless asked for, like the CLI).
 
     Returns:
@@ -908,7 +921,8 @@ async def watch_video_start(
         start, end, no_html, no_docx, lang=lang, model=model,
         resolution=resolution, no_audio=no_audio,
         contact_sheet=contact_sheet,
-        highlights_prompt=highlights_prompt)
+        highlights_prompt=highlights_prompt,
+        cookies_from_browser=cookies_from_browser)
 
     # Write the initial "running" status BEFORE launching the background task,
     # so an immediate status poll always sees something. server_pid lets a

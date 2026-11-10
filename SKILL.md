@@ -24,6 +24,7 @@ One command turns the video into files on disk: `frames/t_NNN.jpg` (timestamped 
 | Narrated video, want fewer frames | `--dedup` (keeps frames near narrated moments; skipped without a transcript) |
 | Podcast / interview / meeting | `--whisper deepgram` (key) or `--whisper whisperx` (local, HF token), then relabel speakers |
 | User asked in THIS message to post to the ticket | `--post-to-jira` (asks for confirmation; never on your own initiative) |
+| URL on a site that needs a login (Instagram, X, private/age-gated YouTube) and the user agreed to use their browser login | `--cookies-from-browser chrome` (or `firefox`, `safari`, `edge`, `brave`; `chrome:Profile 1` for a profile) |
 
 Transcription defaults to `--whisper auto`: the URL's captions when yt-dlp got a VTT, else local faster-whisper (free, offline, ~25 s cold start then ~0.1 s per second of audio on CPU). Hosted providers are never picked from env vars; pass `--whisper groq|openai|deepgram` yourself only when the key is set and sending audio off the machine is fine.
 
@@ -33,7 +34,7 @@ Transcription defaults to `--whisper auto`: the URL's captions when yt-dlp got a
 python3 "${CLAUDE_SKILL_DIR}/scripts/watch_video.py" <input> [flags]
 ```
 
-Windows: `py` instead of `python3`. Workdir defaults to `${TMPDIR:-/tmp}/watch-<slug>/` (`--workdir` overrides it); a re-run with the same flags hits the per-step cache and takes under a second. Stderr carries one JSON progress event per line: don't read it. The JSON block at the end of stdout is `meta.json`.
+Windows: `py` instead of `python3`. Any Python works: when the one you call lacks the packages, the script builds a private environment at `~/.watch-video/venv` (fetching a compatible Python with `uv` if none is installed) and re-runs itself there. That takes ~10 s once; you'll see `bootstrap` events. Workdir defaults to `${TMPDIR:-/tmp}/watch-<slug>/` (`--workdir` overrides it); a re-run with the same flags hits the per-step cache and takes under a second. Stderr carries one JSON progress event per line: don't read it. The JSON block at the end of stdout is `meta.json`.
 
 ## 3. Read meta.json
 
@@ -46,8 +47,8 @@ Windows: `py` instead of `python3`. Workdir defaults to `${TMPDIR:-/tmp}/watch-<
 |---|---|---|
 | 0 | done; check `warnings` | answer |
 | 2 | bad input (incl. no Jira `credentials.json`) | fix the input, or use the Jira semi-auto fallback |
-| 3 | `ffmpeg` (or `yt_dlp` for URLs) missing | tell the user what to install |
-| 4 | Atlassian 401 on Jira fetch or `--post-to-jira` | check `credentials.json` |
+| 3 | `ffmpeg` missing, or the private Python environment could not be built | tell the user what to install |
+| 4 | Atlassian 401 on Jira fetch or `--post-to-jira`; or, with `login_required` in the error, the URL needs a login | Jira: check `credentials.json`. Login: ask the user whether to use their browser's login, then re-run with `--cookies-from-browser <browser>` |
 | 5 | several videos on the Jira issue; stdout lists `candidates` | ask which one, re-run with `--attachment-id <ID>` |
 | 6 / 7 | I/O failure / timeout | report it |
 
@@ -76,13 +77,14 @@ Pick highlights and write summaries yourself from the frames and transcript. `--
 - Don't post to Jira (`--post-to-jira`, MCP `post_to_jira(confirm=True)`) unless the user asked for it in the current message.
 - Don't run the video pipeline for screenshots or PDFs on a ticket: `python3 "${CLAUDE_SKILL_DIR}/scripts/fetch_attachment.py" PROJ-1234` downloads them and prints their paths.
 - Don't answer with `S0`/`S1` after `--whisper deepgram|whisperx`: relabel the speakers first.
+- Don't pass `--cookies-from-browser` or `--cookies` on your own initiative: they read the user's logged-in session. Ask first, unless the user already set a default (`WATCH_VIDEO_COOKIES_FROM_BROWSER` or `~/.watch-video/config.json`). Cookies are only ever sent after an anonymous attempt was refused.
 - Don't delete the workdir; the user may want to re-run. Clean it up at the end of the session only if they agree.
 
 ## References (read only when the case comes up)
 
 - `references/pipeline.md`: every `watch_video.py` flag, input modes, what each step does, frame budget table, known limits. Read when you need a flag not shown above.
 - `references/meta-schema.md`: workdir layout, full meta.json schema, report.md, all exit codes, stderr events. Read when you need a field or code not covered above.
-- `references/setup.md`: install commands for ffmpeg, faster-whisper (`av<19`), yt-dlp, Pillow, Tesseract. Read on exit 3 or a missing-dependency warning.
+- `references/setup.md`: the self-built Python environment, install commands for ffmpeg, faster-whisper (`av<19`), yt-dlp, Pillow, Tesseract, and login cookies for sites like Instagram. Read on exit 3, exit 4 with `login_required`, or a missing-dependency warning.
 - `references/jira.md`: Atlassian token setup, ambiguous attachments, the semi-auto fallback without a token, non-video attachments. Read when the input is a Jira key and the run fails with exit 2, 4 or 5.
 - `references/whisper-providers.md`: provider order, hosted key setup, default models, speaker relabeling. Read before passing a non-default `--whisper` or `--model`, or when the transcript has `**S0**` tags.
 - `references/post-to-jira.md`: posting the report as a Jira comment, styles, idempotency, headless highlights. Read only after the user asked to post.

@@ -17,6 +17,8 @@ Full reference for `scripts/watch_video.py` (the CLI orchestrator). Every flag, 
 | Flag | Purpose |
 |---|---|
 | `--since-seconds N` | (`auto` input mode only) max age in seconds of the file picked from `~/Downloads/`. Default 300. |
+| `--cookies-from-browser BROWSER[:PROFILE]` | (URL mode) when the site refuses an anonymous download as login-required, retry with this browser's cookies (`chrome`, `firefox`, `safari`, `edge`, `brave`, ...). Default from `WATCH_VIDEO_COOKIES_FROM_BROWSER` or `cookies_from_browser` in `~/.watch-video/config.json`. |
+| `--cookies FILE` | (URL mode) same, from a Netscape `cookies.txt`. Default from `WATCH_VIDEO_COOKIES` or `cookies` in `~/.watch-video/config.json`. |
 
 ## Frame extraction
 

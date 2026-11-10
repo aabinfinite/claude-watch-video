@@ -3,6 +3,8 @@
 Modes (mutually exclusive):
     --path <PATH>             Use the local file as-is (no copy)
     --url <URL>               Download via yt-dlp into <workdir>/source.<ext>
+                              (--cookies-from-browser / --cookies for sites that
+                              need a login, e.g. Instagram)
     --jira-key <KEY>          Full-auto: read API token, list issue attachments,
                               range-download the (chosen) video attachment.
     --auto-downloads          Pick most recently modified video in ~/Downloads/
@@ -35,6 +37,14 @@ from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".flv")
 DEFAULT_CREDS_PATH = Path.home() / ".atlassian-token" / "credentials.json"
+# Optional user defaults, e.g. {"cookies_from_browser": "chrome"}.
+DEFAULT_CONFIG_PATH = Path.home() / ".watch-video" / "config.json"
+# Substrings (lowercased) yt-dlp uses when a site wants a logged-in session:
+# Instagram, X, TikTok, Facebook, age-gated / members-only / private YouTube.
+LOGIN_REQUIRED_MARKERS = (
+    "login required", "--cookies", "log in", "sign in", "private video",
+    "registered users", "confirm your age", "members-only", "age-restricted",
+)
 # YouTube often serves no pre-muxed file, only separate video and audio
 # streams, so a muxed-only selector fails. H.264 + AAC merge into mp4 without
 # re-encoding and decode on any ffmpeg build; 720p is plenty for 960px frames.
@@ -58,12 +68,66 @@ def _require_module(name: str, install_hint: str) -> None:
             dependency=name)
 
 
-def fetch_url(url: str, workdir: Path) -> tuple[Path, dict]:
+def resolve_cookie_source(cookies_from_browser: str | None = None,
+                          cookies_file: str | None = None) -> dict:
+    """Pick the login cookies yt-dlp may use, as yt-dlp options.
+
+    Order: explicit arguments, then env vars WATCH_VIDEO_COOKIES_FROM_BROWSER /
+    WATCH_VIDEO_COOKIES, then ~/.watch-video/config.json keys
+    "cookies_from_browser" / "cookies". Returns {} when nothing is configured.
+
+    A browser spec follows yt-dlp's CLI form: BROWSER[+KEYRING][:PROFILE][::CONTAINER],
+    e.g. "chrome", "firefox:default-release", "chrome:Profile 1"."""
+    browser = cookies_from_browser or os.environ.get("WATCH_VIDEO_COOKIES_FROM_BROWSER")
+    cfile = cookies_file or os.environ.get("WATCH_VIDEO_COOKIES")
+    if not browser and not cfile and DEFAULT_CONFIG_PATH.exists():
+        try:
+            cfg = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            emit("warning", step="yt_dlp",
+                 msg=f"ignoring unreadable {DEFAULT_CONFIG_PATH}: {e}")
+            cfg = {}
+        browser = cfg.get("cookies_from_browser")
+        cfile = cfg.get("cookies")
+    if cfile:
+        p = Path(cfile).expanduser()
+        if not p.exists():
+            die(ExitCode.BAD_INPUT, f"cookies file not found: {p}")
+        return {"cookiefile": str(p)}
+    if browser:
+        spec, _, container = browser.partition("::")
+        spec, _, profile = spec.partition(":")
+        name, _, keyring = spec.partition("+")
+        return {"cookiesfrombrowser": (name.lower(), profile or None,
+                                       keyring.upper() or None, container or None)}
+    return {}
+
+
+def _describe_cookie_source(cookie_opts: dict) -> str:
+    if "cookiefile" in cookie_opts:
+        return f"file {cookie_opts['cookiefile']}"
+    name, profile, _, _ = cookie_opts["cookiesfrombrowser"]
+    return f"{name} (profile {profile})" if profile else name
+
+
+def _is_login_required(err_msg: str) -> bool:
+    low = err_msg.lower()
+    return any(m in low for m in LOGIN_REQUIRED_MARKERS)
+
+
+def fetch_url(url: str, workdir: Path,
+              cookies_from_browser: str | None = None,
+              cookies_file: str | None = None) -> tuple[Path, dict]:
     """yt-dlp the URL into workdir/<title>.<ext>. Returns (path, metadata_dict).
 
     Uses yt-dlp's Python API in one shot to get title/uploader/source_url
-    alongside the download (instead of two network calls)."""
+    alongside the download (instead of two network calls).
+
+    The first attempt is always anonymous. Login cookies (see
+    resolve_cookie_source) are only sent when the site refuses that attempt
+    as login-required, so public videos never touch the browser's cookie store."""
     _require_module("yt_dlp", "Run: pip install --user yt-dlp")
+    cookie_opts = resolve_cookie_source(cookies_from_browser, cookies_file)
     workdir.mkdir(parents=True, exist_ok=True)
 
     emit("start", step="yt_dlp", url=url)
@@ -93,38 +157,72 @@ def fetch_url(url: str, workdir: Path) -> tuple[Path, dict]:
         with YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=True)
 
-    try:
-        info = _ydl_run(ydl_opts)
-    except DownloadError as e:
-        err_msg = str(e)
-        # YouTube's subtitle endpoint rate-limits aggressively (429 / Too Many
-        # Requests). The video itself is downloadable; only the captions
-        # request is gated. Retry once without subtitles and let transcribe
-        # fall back to local Whisper. Keeps the pipeline usable when YouTube
-        # is throttling.
-        is_subtitle_rate_limit = (
-            "429" in err_msg
-            or "Too Many Requests" in err_msg
-            or "Sign in to confirm" in err_msg
-        )
-        if is_subtitle_rate_limit:
+    def _download(opts: dict) -> dict:
+        try:
+            return _ydl_run(opts)
+        except DownloadError as e:
+            err_msg = str(e)
+            # YouTube's subtitle endpoint rate-limits aggressively (429 / Too
+            # Many Requests). The video itself is downloadable; only the
+            # captions request is gated. Retry once without subtitles and let
+            # transcribe fall back to local Whisper. Keeps the pipeline usable
+            # when YouTube is throttling.
+            is_subtitle_rate_limit = (
+                "429" in err_msg
+                or "Too Many Requests" in err_msg
+                or "Sign in to confirm" in err_msg
+            )
+            if not is_subtitle_rate_limit:
+                raise
             emit("warning", step="yt_dlp",
                  msg="captions endpoint rate-limited; retrying without subtitles. "
                      "transcribe will fall back to local Whisper.",
                  first_error=err_msg.splitlines()[0][:200])
-            retry_opts = {**ydl_opts,
-                          "writesubtitles": False,
-                          "writeautomaticsub": False}
-            try:
-                info = _ydl_run(retry_opts)
-            except DownloadError as e2:
-                die(ExitCode.IO_FAIL,
-                    f"yt-dlp failed even without captions: {e2}")
-        else:
-            die(ExitCode.IO_FAIL, f"yt-dlp failed (network or unsupported URL): {e}")
+            return _ydl_run({**opts,
+                             "writesubtitles": False,
+                             "writeautomaticsub": False})
+
+    used_cookies = False
+    try:
+        try:
+            info = _download(ydl_opts)
+        except DownloadError as e:
+            if not _is_login_required(str(e)):
+                raise
+            if not cookie_opts:
+                die(ExitCode.AUTH_FAIL,
+                    "This site only serves the video to a logged-in session. "
+                    "Log in to the site in a browser, then re-run with "
+                    "--cookies-from-browser <chrome|firefox|safari|edge|brave|...> "
+                    "(or --cookies <cookies.txt>). To make it the default, set "
+                    "WATCH_VIDEO_COOKIES_FROM_BROWSER or put "
+                    '{"cookies_from_browser": "chrome"} in '
+                    f"{DEFAULT_CONFIG_PATH}. yt-dlp said: "
+                    f"{str(e).splitlines()[0][:200]}",
+                    login_required=True)
+            emit("warning", step="yt_dlp",
+                 msg="site requires login; retrying with the configured cookies",
+                 cookie_source=_describe_cookie_source(cookie_opts))
+            used_cookies = True
+            info = _download({**ydl_opts, **cookie_opts})
+    except DownloadError as e:
+        if used_cookies and _is_login_required(str(e)):
+            die(ExitCode.AUTH_FAIL,
+                f"Still refused with cookies from {_describe_cookie_source(cookie_opts)}. "
+                "Check you are logged in to the site in that browser (and profile), "
+                f"or that yt-dlp is current (pip install -U yt-dlp). yt-dlp said: {e}",
+                login_required=True)
+        die(ExitCode.IO_FAIL, f"yt-dlp failed (network or unsupported URL): {e}")
     except KeyboardInterrupt:
         raise
     except Exception as e:
+        if used_cookies:
+            die(ExitCode.AUTH_FAIL,
+                f"Could not read cookies from {_describe_cookie_source(cookie_opts)}: {e}. "
+                "Is that browser installed, and (macOS) did you allow Keychain "
+                "access? Firefox, or a cookies.txt file via --cookies, avoids "
+                "the Keychain prompt.",
+                login_required=True)
         die(ExitCode.IO_FAIL, f"yt-dlp unexpected error: {e}")
 
     # Resolve the actual file yt-dlp wrote
@@ -169,6 +267,7 @@ def fetch_url(url: str, workdir: Path) -> tuple[Path, dict]:
         "upload_date": (info or {}).get("upload_date"),
         "captions_path": str(captions_path) if captions_path else None,
         "captions_kind": captions_kind,
+        "used_login_cookies": used_cookies,
     }
     emit("complete", step="yt_dlp",
          duration_seconds=round(time.time() - t0, 2),
@@ -474,6 +573,8 @@ def run_inproc(
     attachment_id: str | None = None,
     since_seconds: int = 300,
     credentials: str | None = None,
+    cookies_from_browser: str | None = None,
+    cookies_file: str | None = None,
 ) -> dict:
     """Pure function for in-process invocation. See probe.run_inproc docstring.
 
@@ -486,7 +587,8 @@ def run_inproc(
 
     extra: dict = {}
     if url:
-        downloaded, extra = fetch_url(url, workdir)
+        downloaded, extra = fetch_url(url, workdir,
+                                      cookies_from_browser, cookies_file)
         source = "url"
     elif path:
         p = Path(path).resolve()
@@ -529,6 +631,11 @@ def main() -> int:
                     help="(--auto-downloads only) max file age")
     ap.add_argument("--credentials", default=str(DEFAULT_CREDS_PATH),
                     help="(--jira-key only) path to Atlassian credentials JSON")
+    ap.add_argument("--cookies-from-browser", metavar="BROWSER[:PROFILE]",
+                    help="(--url only) log in with this browser's cookies when "
+                         "the site requires it, e.g. chrome, firefox, safari")
+    ap.add_argument("--cookies", metavar="FILE",
+                    help="(--url only) Netscape cookies.txt to log in with")
     args = ap.parse_args()
     info = run_inproc(
         workdir=Path(args.workdir),
@@ -539,6 +646,8 @@ def main() -> int:
         attachment_id=args.attachment_id,
         since_seconds=args.since_seconds,
         credentials=args.credentials,
+        cookies_from_browser=args.cookies_from_browser,
+        cookies_file=args.cookies,
     )
     print(json.dumps(info))
     return ExitCode.OK

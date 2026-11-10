@@ -125,8 +125,8 @@ For `watch_video.py`, a non-zero exit means fetch, probe or frames failed (nothi
 |---|---|---|
 | 0 | OK | success (check `warnings` and `skipped_audio_reason`) |
 | 2 | BAD_INPUT | missing arg, file not found, invalid value (incl. missing `credentials.json` for Jira mode) |
-| 3 | MISSING_DEP | `ffmpeg` (or `yt_dlp` for URLs) not on PATH. Missing faster-whisper / Tesseract / Pillow after frames is a warning, not an exit |
-| 4 | AUTH_FAIL | Atlassian 401 on Jira fetch or `--post-to-jira` — check email/token in `credentials.json`. (A missing highlights or hosted-Whisper key is a warning, not an exit) |
+| 3 | MISSING_DEP | `ffmpeg` not on PATH, or the private Python environment (`~/.watch-video/venv`) could not be built. Missing faster-whisper / Tesseract / Pillow after frames is a warning, not an exit |
+| 4 | AUTH_FAIL | Atlassian 401 on Jira fetch or `--post-to-jira` — check email/token in `credentials.json`. With `login_required: true` in the error event: the URL needs a logged-in session and no cookie source was configured, or the cookies didn't grant access — see `references/setup.md`. (A missing highlights or hosted-Whisper key is a warning, not an exit) |
 | 5 | AMBIGUOUS | multiple matches (e.g. multiple video attachments on a Jira issue). Stdout has `candidates`. |
 | 6 | IO_FAIL | disk full, write failed, corrupted download |
 | 7 | TIMEOUT | network/subprocess timeout |
